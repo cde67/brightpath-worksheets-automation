@@ -12,10 +12,16 @@ API_BASE = "https://api.gumroad.com/v2"
 
 
 def load_token():
-    with open(os.path.join(os.path.dirname(__file__), ".env")) as f:
-        for line in f:
-            if line.startswith("GUMROAD_ACCESS_TOKEN="):
-                return line.strip().split("=", 1)[1]
+    env_token = os.environ.get("GUMROAD_ACCESS_TOKEN")
+    if env_token:
+        return env_token
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                if line.startswith("GUMROAD_ACCESS_TOKEN="):
+                    return line.strip().split("=", 1)[1]
+    return None
 
 
 TOKEN = load_token()
