@@ -1,0 +1,4 @@
+.env
+products/
+run_cycle.log
+run_daily.sh

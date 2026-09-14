@@ -12,6 +12,7 @@ Requires GUMROAD_ACCESS_TOKEN as an environment variable.
 """
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -19,6 +20,8 @@ import urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate_worksheet as g
 import publish_gumroad as pg
+import build_pin_images as bpi
+import build_pinterest_csv as bpc
 
 PRICE_CENTS = 399
 
@@ -62,7 +65,9 @@ def main():
 
     base = os.path.dirname(os.path.abspath(__file__))
     products_dir = os.path.join(base, "products")
+    pins_dir = os.path.join(base, "pins")
     os.makedirs(products_dir, exist_ok=True)
+    os.makedirs(pins_dir, exist_ok=True)
 
     already = existing_titles()
     print(f"{len(already)} products already live on Gumroad.")
@@ -106,6 +111,11 @@ def main():
         enable_res = pg.enable_product(product_id)
         url = enable_res.get("product", {}).get("short_url", "")
         print(f"  -> {url}")
+
+        pin_path = os.path.join(pins_dir, f"{entry['slug']}.png")
+        bpi.make_pin(grade, operation, 10, pin_path)
+        print(f"  pin image -> {pin_path}")
+
         published += 1
         time.sleep(2)
 
@@ -120,6 +130,52 @@ def main():
     remaining = len(to_publish) - published
     if remaining > 0:
         print(f"{remaining} still pending - will publish on the next scheduled run.")
+
+    if published > 0:
+        print("\nRebuilding Pinterest CSV from live Gumroad listings...")
+        bpc.main()
+        sync_to_github(base)
+
+
+def sync_to_github(base):
+    """Push updated catalog.py, pins/, and pinterest_bulk_pins.csv to the public
+    GitHub repo so the pin images are reachable at raw.githubusercontent.com URLs.
+    Skips gracefully (does not fail the cycle) if no GITHUB_TOKEN is configured."""
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("GITHUB_TOKEN not set - skipping GitHub sync. Pin images/CSV are up to date locally only.")
+        return
+
+    remote = f"https://x-access-token:{token}@github.com/cde67/brightpath-worksheets-automation.git"
+
+    def run(cmd, **kw):
+        return subprocess.run(cmd, cwd=base, capture_output=True, text=True, **kw)
+
+    if not os.path.isdir(os.path.join(base, ".git")):
+        run(["git", "init"])
+        run(["git", "config", "user.name", "Bright Path Automation"])
+        run(["git", "config", "user.email", "automation@brightpathworksheets.local"])
+        run(["git", "remote", "add", "origin", remote])
+        fetch = run(["git", "fetch", "origin", "main"])
+        if fetch.returncode == 0:
+            run(["git", "checkout", "-B", "main", "origin/main"])
+        else:
+            run(["git", "checkout", "-B", "main"])
+    else:
+        run(["git", "remote", "set-url", "origin", remote])
+        run(["git", "fetch", "origin", "main"])
+        run(["git", "merge", "origin/main", "--no-edit"])
+
+    run(["git", "add", "catalog.py", "pins", "pinterest_bulk_pins.csv"])
+    commit = run(["git", "commit", "-m", "Automated cycle: new pin images + Pinterest CSV"])
+    if commit.returncode != 0:
+        print("Nothing new to commit for GitHub sync.")
+        return
+    push = run(["git", "push", "origin", "main"])
+    if push.returncode == 0:
+        print("Pushed updated pins/CSV to GitHub.")
+    else:
+        print(f"GitHub push failed:\n{push.stderr}")
 
 
 if __name__ == "__main__":
