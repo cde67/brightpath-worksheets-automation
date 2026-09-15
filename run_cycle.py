@@ -18,43 +18,50 @@ import time
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import copy_gen as cg
 import generate_worksheet as g
 import publish_gumroad as pg
 import build_pin_images as bpi
 import build_pinterest_csv as bpc
 
 PRICE_CENTS = 399
+GITHUB_REPO = "cde67/brightpath-worksheets-automation"
+RAW_BASE = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main"
 
 
 def slugify(text):
     return text.lower().replace(" ", "_").replace("'", "")
 
 
+def old_style_title(grade, operation, num_pages):
+    """The rigid pre-copy_gen title pattern every currently-live product
+    still has. Needed so the 'already published' check below doesn't
+    mistake already-live products for new ones just because copy_gen now
+    generates different (varied) titles - see existing_titles()."""
+    return f"{grade} {operation} Worksheets - {num_pages} Printable Practice Pages + Answer Key - Instant Download"
+
+
 def build_meta(grade, operation, num_pages):
-    title = f"{grade} {operation} Worksheets - {num_pages} Printable Practice Pages + Answer Key - Instant Download"
-    description = (
-        f"Help your {grade.lower()} student master {operation.lower()} with this printable "
-        f"worksheet bundle. Includes {num_pages} practice pages plus a matching answer key, "
-        f"ready to print at home or in the classroom. Instant digital download - no waiting, "
-        f"no shipping.\n\nPerfect for homeschool, classroom practice, or extra review at home."
-    )
-    tags = [
-        operation.lower(), grade.lower(), "math worksheets", "homeschool",
-        "printable", "math practice", "teacher resource", "instant download",
-        "answer key", "elementary math",
-    ]
-    tags = [t for t in tags if len(t) <= 20]
-    return title, description, tags[:10]
+    return cg.build_meta(grade, operation, num_pages)
 
 
 def existing_titles():
     if not pg.TOKEN:
         raise RuntimeError("GUMROAD_ACCESS_TOKEN not set")
-    req_url = f"{pg.API_BASE}/products?access_token={pg.TOKEN}"
     import urllib.request
-    with urllib.request.urlopen(req_url) as resp:
-        data = json.loads(resp.read().decode())
-    return {p["name"] for p in data.get("products", [])}
+    titles = set()
+    url = f"{pg.API_BASE}/products?access_token={pg.TOKEN}"
+    while url:
+        with urllib.request.urlopen(url) as resp:
+            data = json.loads(resp.read().decode())
+        titles.update(p["name"] for p in data.get("products", []))
+        next_url = data.get("next_page_url")
+        if not next_url:
+            break
+        full = f"https://api.gumroad.com{next_url}" if next_url.startswith("/") else next_url
+        sep = "&" if "?" in full else "?"
+        url = f"{full}{sep}access_token={pg.TOKEN}"
+    return titles
 
 
 def main():
@@ -66,8 +73,10 @@ def main():
     base = os.path.dirname(os.path.abspath(__file__))
     products_dir = os.path.join(base, "products")
     pins_dir = os.path.join(base, "pins")
+    thumbs_dir = os.path.join(base, "thumbs")
     os.makedirs(products_dir, exist_ok=True)
     os.makedirs(pins_dir, exist_ok=True)
+    os.makedirs(thumbs_dir, exist_ok=True)
 
     already = existing_titles()
     print(f"{len(already)} products already live on Gumroad.")
@@ -81,19 +90,33 @@ def main():
             entry = {
                 "slug": slug, "file": f"products/{slug}.pdf", "title": title,
                 "description": desc, "tags": tags, "price_cents": PRICE_CENTS,
+                "grade": grade, "operation": operation,
             }
             catalog.append(entry)
-            if title not in already:
+            old_title = old_style_title(grade, operation, 10)
+            if title not in already and old_title not in already:
                 to_publish.append((grade, operation, max_n, per_page, entry))
 
     print(f"{len(to_publish)} new products to publish this cycle.")
 
-    published = 0
+    # Generate the PDF + pin + thumbnail images for everything we're about to
+    # publish BEFORE creating any Gumroad products, then push once so the
+    # image URLs are live on GitHub before we ask Gumroad to fetch them.
     for grade, operation, max_n, per_page, entry in to_publish:
         out_path = os.path.join(base, entry["file"])
         print(f"Generating {entry['slug']}...")
         g.make_bundle(grade, operation, max_n, per_page, 10, out_path)
+        pin_path = os.path.join(pins_dir, f"{entry['slug']}.png")
+        thumb_path = os.path.join(thumbs_dir, f"{entry['slug']}.png")
+        bpi.make_pin(grade, operation, 10, max_n, per_page, pin_path)
+        bpi.make_thumbnail(grade, operation, 10, max_n, per_page, thumb_path)
 
+    if to_publish:
+        sync_to_github(base, extra_paths=["pins", "thumbs"])
+
+    published = 0
+    for grade, operation, max_n, per_page, entry in to_publish:
+        out_path = os.path.join(base, entry["file"])
         print(f"Publishing {entry['slug']}...")
         try:
             res = pg.create_product(entry["title"], entry["description"], entry["price_cents"], entry["tags"], out_path)
@@ -112,9 +135,14 @@ def main():
         url = enable_res.get("product", {}).get("short_url", "")
         print(f"  -> {url}")
 
-        pin_path = os.path.join(pins_dir, f"{entry['slug']}.png")
-        bpi.make_pin(grade, operation, 10, pin_path)
-        print(f"  pin image -> {pin_path}")
+        pin_url = f"{RAW_BASE}/pins/{entry['slug']}.png"
+        thumb_url = f"{RAW_BASE}/thumbs/{entry['slug']}.png"
+        try:
+            pg.set_cover(product_id, pin_url)
+            pg.set_thumbnail(product_id, thumb_url)
+            print(f"  cover + thumbnail set from {pin_url}")
+        except urllib.error.HTTPError as e:
+            print(f"  cover/thumbnail set failed (non-fatal): {e}")
 
         published += 1
         time.sleep(2)
@@ -137,9 +165,11 @@ def main():
         sync_to_github(base)
 
 
-def sync_to_github(base):
-    """Push updated catalog.py, pins/, and pinterest_bulk_pins.csv to the public
-    GitHub repo so the pin images are reachable at raw.githubusercontent.com URLs.
+def sync_to_github(base, extra_paths=None):
+    """Push updated catalog.py, pins/, thumbs/, and pinterest_bulk_pins.csv to
+    the public GitHub repo so images are reachable at raw.githubusercontent.com
+    URLs (Gumroad's cover/thumbnail endpoints fetch from a public URL, so this
+    must run before those API calls, not just at the end of the cycle).
     Skips gracefully (does not fail the cycle) if no GITHUB_TOKEN is configured."""
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
@@ -166,8 +196,12 @@ def sync_to_github(base):
         run(["git", "fetch", "origin", "main"])
         run(["git", "merge", "origin/main", "--no-edit"])
 
-    run(["git", "add", "catalog.py", "pins", "pinterest_bulk_pins.csv"])
-    commit = run(["git", "commit", "-m", "Automated cycle: new pin images + Pinterest CSV"])
+    add_paths = ["catalog.py", "pins", "pinterest_bulk_pins.csv"]
+    for p in (extra_paths or []):
+        if p not in add_paths:
+            add_paths.append(p)
+    run(["git", "add"] + add_paths)
+    commit = run(["git", "commit", "-m", "Automated cycle: new pin/thumbnail images + Pinterest CSV"])
     if commit.returncode != 0:
         print("Nothing new to commit for GitHub sync.")
         return

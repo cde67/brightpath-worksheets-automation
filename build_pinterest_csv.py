@@ -13,10 +13,19 @@ import os
 import urllib.request
 
 import catalog as cat
-from build_pin_images import parse_grade_operation
 
 RAW_BASE = "https://raw.githubusercontent.com/cde67/brightpath-worksheets-automation/main/pins"
 BOARD = "Homeschool Math Worksheets"
+
+
+def _old_style_title(grade, operation, num_pages):
+    """Duplicated from run_cycle.old_style_title (not imported, to avoid a
+    circular import - run_cycle imports this module). A live product created
+    before copy_gen existed still has this exact title; matching against it
+    too means the CSV isn't blind to already-live products just because
+    catalog.py now carries a different (copy_gen-varied) title for the same
+    combo."""
+    return f"{grade} {operation} Worksheets - {num_pages} Printable Practice Pages + Answer Key - Instant Download"
 
 
 def load_token():
@@ -28,10 +37,19 @@ def load_token():
 
 def live_products_by_title():
     token = load_token()
+    result = {}
     url = f"https://api.gumroad.com/v2/products?access_token={token}"
-    with urllib.request.urlopen(url) as resp:
-        data = json.loads(resp.read().decode())
-    return {p["name"]: p["short_url"] for p in data.get("products", [])}
+    while url:
+        with urllib.request.urlopen(url) as resp:
+            data = json.loads(resp.read().decode())
+        result.update({p["name"]: p["short_url"] for p in data.get("products", [])})
+        next_url = data.get("next_page_url")
+        if not next_url:
+            break
+        full = f"https://api.gumroad.com{next_url}" if next_url.startswith("/") else next_url
+        sep = "&" if "?" in full else "?"
+        url = f"{full}{sep}access_token={token}"
+    return result
 
 
 def main():
@@ -39,7 +57,8 @@ def main():
     rows = []
     skipped = []
     for item in cat.CATALOG:
-        link = live.get(item["title"])
+        old_title = _old_style_title(item["grade"], item["operation"], 10)
+        link = live.get(item["title"]) or live.get(old_title)
         if not link:
             skipped.append(item["slug"])
             continue
