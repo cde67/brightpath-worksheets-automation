@@ -15,6 +15,17 @@ mascot (the owl from generate_worksheet.py) enlarged and used as a character,
 not just a tiny in-corner icon. Still pure local rendering, no network calls,
 and still shows an actual real generated worksheet page (not placeholder
 text) so the pin/cover doesn't oversell what's inside.
+
+v3 - narrowed the research specifically to what teacher-buyers respond to,
+not just "Pinterest pins" generally: real bestseller thumbnails on
+Teachers Pay Teachers (The Moffatt Girls, A Teachable Teacher, Shelly Sitz -
+all with thousands of reviews). The one element every top seller had that
+this design was missing: an explicit "NO PREP" callout. It's the single most
+repeated phrase across that whole category, because it's the actual thing a
+teacher is paying to avoid - and it's honestly true of a print-and-go PDF, so
+it's a real claim, not just decoration. Added as a bold pill badge. The page
+count badge on real bestsellers is more often a plain circle than a diagonal
+ribbon, but the ribbon reads fine here and isn't worth re-churning.
 """
 import os
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -133,6 +144,20 @@ def draw_star(draw, cx, cy, r, color):
     ], fill=color)
 
 
+def pill_badge(draw, x, y, text, fg, bg, font_size=24):
+    """A small rounded 'NO PREP' style pill, left-anchored at (x, y) - the
+    one element every real TPT bestseller thumbnail had that this design
+    was missing (see module docstring). Returns the pill's right edge x, so
+    callers can lay out more elements after it."""
+    font = load_font(FONT_BODY, font_size, 700)
+    pad_x, pad_y = 18, 10
+    text_w = draw.textlength(text, font=font)
+    x1, y1 = x + text_w + pad_x * 2, y + font_size + pad_y * 2
+    draw.rounded_rectangle([x, y, x1, y1], radius=(y1 - y) / 2, fill=bg)
+    draw.text((x + pad_x, (y + y1) / 2 + 1), text, font=font, fill=fg, anchor="lm")
+    return x1
+
+
 def ribbon_badge(base, cx, cy, text, accent, angle=-30):
     """A diagonal corner 'value' ribbon (e.g. '10 PAGES + KEY') instead of a
     small plain circle - this exact device (a bold diagonal banner over the
@@ -169,6 +194,15 @@ def make_pin(grade, operation, num_pages, max_n, per_page, out_path):
 
     eyebrow_font = load_font(FONT_BODY, 30, 600)
     draw.text((MARGIN, 44), "PRINTABLE MATH WORKSHEETS", font=eyebrow_font, fill=CREAM)
+
+    # "NO PREP" pill, right after the eyebrow text - the single most
+    # repeated trust phrase across real bestselling teacher-facing worksheet
+    # listings (The Moffatt Girls, A Teachable Teacher, Shelly Sitz all use
+    # it prominently). It's also honestly true of a print-and-go PDF, so
+    # it's a real claim, not just decoration. Width is measured rather than
+    # hardcoded so this stays correctly placed if the eyebrow text changes.
+    eyebrow_w = draw.textlength("PRINTABLE MATH WORKSHEETS", font=eyebrow_font)
+    pill_badge(draw, MARGIN + eyebrow_w + 20, 34, "NO PREP", INK, CREAM, font_size=22)
 
     title_font = load_font(FONT_TITLE, 62)
     lines = wrap_text(draw, f"{grade} {operation}", title_font, PIN_W - 2 * MARGIN - 130)
@@ -234,6 +268,7 @@ def make_thumbnail(grade, operation, num_pages, max_n, per_page, out_path):
     header_h = 190
     draw.rectangle([0, 0, THUMB_SIZE, header_h], fill=accent)
     gw.draw_mascot_owl(draw, 92, 95, 52, accent)
+    pill_badge(draw, 34, 154, "NO PREP", INK, CREAM, font_size=18)
 
     title_font = load_font(FONT_TITLE, 40)
     lines = wrap_text(draw, f"{grade} {operation}", title_font, THUMB_SIZE - 220)
