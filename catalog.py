@@ -1,4 +1,4 @@
-"""Auto-generated catalog of worksheet bundle products."""
+"""Auto-generated full catalog (published + pending) of worksheet products."""
 
 CATALOG = [
     {'slug': 'kindergarten_addition', 'file': 'products/kindergarten_addition.pdf', 'title': 'Kindergarten Addition Worksheets - 10 Printable Practice Pages + Answer Key - Instant Download', 'description': "Whether it's extra homework help, a substitute-day activity, or summer review, this kindergarten addition bundle has 10 ready-to-print pages plus answers. No login, no shipping - download the PDF and print at home or at school.", 'tags': ['addition', 'kindergarten', 'math worksheets', 'homeschool', 'printable', 'math practice', 'teacher resource', 'instant download', 'answer key', 'elementary math'], 'price_cents': 399, 'grade': 'Kindergarten', 'operation': 'Addition'},
