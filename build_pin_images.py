@@ -4,10 +4,17 @@ Generates branded product imagery for Bright Path Worksheets:
 - Gumroad covers (same 1000x1500 image) -> covers/
 - Gumroad square thumbnails (800x800, >=600x600 required) -> thumbs/
 
-All three show an actual mockup of a real generated worksheet page (not just
-text/numbers) so the listing shows people what they're actually buying,
-styled as a slightly-tilted paper sheet with a drop shadow and a "10 pages +
-answer key" corner badge. Pure local rendering, no network calls.
+v2 layout - redesigned after surveying real competitor pins on Pinterest for
+"printable math worksheets" / "addition worksheets printable pdf". The
+previous version (thin accent hairline, one flat page, small plain circle
+badge, all on a near-white background) reads as flat/quiet next to what's
+actually winning attention in that feed: a full color-blocked header band, a
+diagonal "value" ribbon instead of a small badge, a FANNED STACK of pages
+(not one flat sheet) to signal volume at a glance, and the brand's own
+mascot (the owl from generate_worksheet.py) enlarged and used as a character,
+not just a tiny in-corner icon. Still pure local rendering, no network calls,
+and still shows an actual real generated worksheet page (not placeholder
+text) so the pin/cover doesn't oversell what's inside.
 """
 import os
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -27,6 +34,7 @@ INK = (40, 40, 45, 255)
 ACCENT = (216, 90, 80, 255)
 BG = (255, 250, 240, 255)
 CARD = (255, 255, 255, 255)
+CREAM = (250, 246, 238, 255)
 
 
 def load_font(path, size, weight=None):
@@ -80,45 +88,118 @@ def paste_with_shadow(base, paper, x, y, blur=14, offset=10, opacity=70):
     base.paste(paper, (x, y))
 
 
-def draw_badge(base, cx, cy, lines):
-    r = 62
-    draw = ImageDraw.Draw(base)
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=ACCENT, outline=(255, 255, 255), width=4)
-    f1 = load_font(FONT_TITLE, 30)
-    f2 = load_font(FONT_BODY, 20, 600)
-    draw.text((cx, cy - 14), lines[0], font=f1, fill=(255, 255, 255), anchor="mm")
-    draw.text((cx, cy + 16), lines[1], font=f2, fill=(255, 255, 255), anchor="mm")
+def paste_with_alpha_shadow(base, tile, x, y, blur=18, offset=12, opacity=60):
+    """Like paste_with_shadow, but the shadow silhouette is traced from the
+    tile's own alpha channel instead of a plain rectangle - needed for the
+    fanned page stack below, whose outline is several overlapping rotated
+    rectangles, not one flat one."""
+    alpha = tile.split()[-1]
+    pad = offset + blur
+    shadow = Image.new("RGBA", (tile.width + pad * 2, tile.height + pad * 2), (0, 0, 0, 0))
+    solid = Image.new("RGBA", tile.size, (30, 25, 20, opacity))
+    shadow.paste(solid, (pad, pad), alpha)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
+    base.paste(shadow, (x - pad, y - pad), shadow)
+    base.paste(tile, (x, y), tile)
+
+
+def fanned_stack(grade, operation, max_n, per_page, target_w):
+    """Three real worksheet pages fanned like a hand of cards instead of one
+    flat sheet - the single biggest gap found versus competitor pins on
+    Pinterest, which almost always show a spread/stack to signal volume at
+    a glance rather than a single page."""
+    pages = [
+        worksheet_mockup(grade, operation, max_n, per_page, target_w, rotation=-7),
+        worksheet_mockup(grade, operation, max_n, per_page, target_w, rotation=4),
+        worksheet_mockup(grade, operation, max_n, per_page, target_w, rotation=0),
+    ]
+    offsets = [(14, 22), (34, 14), (24, 0)]  # back-to-front draw order, tight cascade
+    max_w = max(p.width + ox for p, (ox, oy) in zip(pages, offsets))
+    max_h = max(p.height + oy for p, (ox, oy) in zip(pages, offsets))
+    canvas = Image.new("RGBA", (max_w, max_h), (0, 0, 0, 0))
+    for p, (ox, oy) in zip(pages, offsets):
+        canvas.alpha_composite(p.convert("RGBA"), (ox, oy))
+    return canvas
+
+
+def draw_star(draw, cx, cy, r, color):
+    """4-point sparkle accent - matches the small doodle stars/suns/clouds
+    seen scattered on real competitor kids-worksheet pins."""
+    draw.polygon([
+        (cx, cy - r), (cx + r * 0.24, cy - r * 0.24),
+        (cx + r, cy), (cx + r * 0.24, cy + r * 0.24),
+        (cx, cy + r), (cx - r * 0.24, cy + r * 0.24),
+        (cx - r, cy), (cx - r * 0.24, cy - r * 0.24),
+    ], fill=color)
+
+
+def ribbon_badge(base, cx, cy, text, accent, angle=-30):
+    """A diagonal corner 'value' ribbon (e.g. '10 PAGES + KEY') instead of a
+    small plain circle - this exact device (a bold diagonal banner over the
+    corner) is what every strong-performing competitor pin in the Pinterest
+    audit used to call out page count / bundle size."""
+    font = load_font(FONT_TITLE, 30)
+    tmp_draw = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
+    text_w = tmp_draw.textlength(text, font=font)
+    width, height = int(text_w) + 70, 66
+    ribbon = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    rd = ImageDraw.Draw(ribbon)
+    rd.rectangle([0, 0, width, height], fill=accent)
+    rd.text((width / 2, height / 2 + 1), text, font=font, fill=(255, 255, 255, 255), anchor="mm")
+    ribbon = ribbon.rotate(angle, expand=True, resample=Image.BICUBIC)
+    base.paste(ribbon, (int(cx - ribbon.width / 2), int(cy - ribbon.height / 2)), ribbon)
 
 
 def make_pin(grade, operation, num_pages, max_n, per_page, out_path):
+    accent = gw.accent_for(grade)
     img = Image.new("RGB", (PIN_W, PIN_H), BG)
     draw = ImageDraw.Draw(img)
 
-    draw.rectangle([0, 0, PIN_W, 26], fill=ACCENT)
+    # Full color-blocked header band (was a 26px hairline) - the header is
+    # the first thing a thumb-scrolling feed sees, and a flat cream page
+    # with a thin accent line reads as quiet next to a colored block.
+    header_h = 300
+    draw.rectangle([0, 0, PIN_W, header_h], fill=accent)
 
-    eyebrow_font = load_font(FONT_BODY, 34, 600)
-    draw.text((MARGIN, 60), "PRINTABLE MATH WORKSHEETS", font=eyebrow_font, fill=ACCENT)
+    # A couple of small sparkle accents in the header for a playful,
+    # kids-worksheet feel (matches the cloud/sun/star doodles competitor
+    # pins use, instead of a bare color block).
+    draw_star(draw, 60, 250, 14, CREAM)
+    draw_star(draw, 96, 210, 8, CREAM)
 
-    title_font = load_font(FONT_TITLE, 70)
-    lines = wrap_text(draw, f"{grade} {operation}", title_font, PIN_W - 2 * MARGIN)
-    y = 120
-    for line in lines:
-        draw.text((MARGIN, y), line, font=title_font, fill=INK)
-        y += 82
+    eyebrow_font = load_font(FONT_BODY, 30, 600)
+    draw.text((MARGIN, 44), "PRINTABLE MATH WORKSHEETS", font=eyebrow_font, fill=CREAM)
 
-    card_top = y + 30
+    title_font = load_font(FONT_TITLE, 62)
+    lines = wrap_text(draw, f"{grade} {operation}", title_font, PIN_W - 2 * MARGIN - 130)
+    y = 92
+    for line in lines[:3]:
+        draw.text((MARGIN, y), line, font=title_font, fill=CREAM)
+        y += 72
+
+    # The brand mascot, enlarged into an actual character in the header
+    # instead of a tiny corner icon on the worksheet page itself - gives the
+    # pin a recognizable face the way competitor mascots do.
+    gw.draw_mascot_owl(draw, PIN_W - 130, 205, 78, accent)
+
+    card_top = header_h + 34
     card_bottom = PIN_H - 130
     draw.rounded_rectangle([MARGIN - 20, card_top, PIN_W - MARGIN + 20, card_bottom], radius=24, fill=CARD, outline=(230, 224, 214), width=2)
 
-    paper = worksheet_mockup(grade, operation, max_n, per_page, target_w=560, rotation=-3)
-    px = (PIN_W - paper.width) // 2
-    py = card_top + 40
-    paste_with_shadow(img, paper, px, py)
+    stack = fanned_stack(grade, operation, max_n, per_page, target_w=530)
+    px = (PIN_W - stack.width) // 2
+    py = card_top + 30
+    paste_with_alpha_shadow(img, stack, px, py)
     draw = ImageDraw.Draw(img)
-    draw_badge(img, PIN_W - MARGIN - 30, py + 40, [f"{num_pages}", "PAGES"])
+
+    # Diagonal ribbon over the header/card seam, top-right - the "value
+    # callout" device every strong competitor pin used, replacing the old
+    # small plain circle badge.
+    ribbon_badge(img, PIN_W - 150, header_h - 6, f"{num_pages} PAGES + KEY", INK)
+    draw = ImageDraw.Draw(img)
 
     feat_font = load_font(FONT_BODY, 32, 500)
-    fy = py + paper.height + 30
+    fy = py + stack.height + 20
     feats = ["+ Matching Answer Key", "Instant PDF Download"]
     for feat in feats:
         # Bullet dot and text share one vertical center (bullet_cy) instead of
@@ -127,42 +208,51 @@ def make_pin(grade, operation, num_pages, max_n, per_page, out_path):
         # visual glyph center, so it rode ~16px too high relative to the
         # actual letters (found while auditing cover/pin image quality).
         bullet_cy = fy + 13
-        draw.ellipse([MARGIN + 40, bullet_cy - 7, MARGIN + 54, bullet_cy + 7], fill=ACCENT)
+        draw.ellipse([MARGIN + 40, bullet_cy - 7, MARGIN + 54, bullet_cy + 7], fill=accent)
         draw.text((MARGIN + 72, bullet_cy), feat, font=feat_font, fill=INK, anchor="lm")
         fy += 46
 
     price_font = load_font(FONT_TITLE, 52)
     draw.text((PIN_W - MARGIN - 40, card_bottom - 60, ), "$3.99", font=price_font, fill=INK, anchor="rm")
 
+    draw_star(draw, MARGIN + 18, PIN_H - 60, 10, accent)
     brand_font = load_font(FONT_BODY, 38, 600)
-    draw.text((PIN_W // 2, PIN_H - 60), "Bright Path Worksheets", font=brand_font, fill=ACCENT, anchor="mm")
+    draw.text((PIN_W // 2, PIN_H - 60), "Bright Path Worksheets", font=brand_font, fill=accent, anchor="mm")
+    draw_star(draw, PIN_W - MARGIN - 18, PIN_H - 60, 10, accent)
 
     img.save(out_path, "PNG")
 
 
 def make_thumbnail(grade, operation, num_pages, max_n, per_page, out_path):
-    """Square (800x800) version for Gumroad's thumbnail slot - same real
-    worksheet mockup, tighter crop so it reads well small."""
+    """Square (800x800) version for Gumroad's thumbnail slot - same fanned
+    real-page mockup and mascot treatment as the pin, tighter crop so it
+    reads well small."""
+    accent = gw.accent_for(grade)
     img = Image.new("RGB", (THUMB_SIZE, THUMB_SIZE), BG)
     draw = ImageDraw.Draw(img)
-    draw.rectangle([0, 0, THUMB_SIZE, 16], fill=ACCENT)
 
-    paper = worksheet_mockup(grade, operation, max_n, per_page, target_w=430, rotation=-4)
-    px = (THUMB_SIZE - paper.width) // 2 + 20
-    py = 150
-    paste_with_shadow(img, paper, px, py)
-    draw = ImageDraw.Draw(img)
-    draw_badge(img, THUMB_SIZE - 90, 110, [f"{num_pages}", "PAGES"])
+    header_h = 190
+    draw.rectangle([0, 0, THUMB_SIZE, header_h], fill=accent)
+    gw.draw_mascot_owl(draw, 92, 95, 52, accent)
 
-    title_font = load_font(FONT_TITLE, 44)
-    lines = wrap_text(draw, f"{grade} {operation}", title_font, THUMB_SIZE - 2 * MARGIN)
-    ty = 40
+    title_font = load_font(FONT_TITLE, 40)
+    lines = wrap_text(draw, f"{grade} {operation}", title_font, THUMB_SIZE - 220)
+    ty = header_h / 2 - (len(lines[:2]) * 46) / 2 + 23
     for line in lines[:2]:
-        draw.text((THUMB_SIZE // 2, ty), line, font=title_font, fill=INK, anchor="mm")
-        ty += 50
+        draw.text((170, ty), line, font=title_font, fill=CREAM, anchor="lm")
+        ty += 46
+
+    stack = fanned_stack(grade, operation, max_n, per_page, target_w=335)
+    px = (THUMB_SIZE - stack.width) // 2 + 15
+    py = header_h + 26
+    paste_with_alpha_shadow(img, stack, px, py)
+    draw = ImageDraw.Draw(img)
+
+    ribbon_badge(img, THUMB_SIZE - 100, header_h - 4, f"{num_pages} PAGES", INK, angle=-30)
+    draw = ImageDraw.Draw(img)
 
     brand_font = load_font(FONT_BODY, 26, 600)
-    draw.text((THUMB_SIZE // 2, THUMB_SIZE - 30), "Bright Path Worksheets", font=brand_font, fill=ACCENT, anchor="mm")
+    draw.text((THUMB_SIZE // 2, THUMB_SIZE - 30), "Bright Path Worksheets", font=brand_font, fill=accent, anchor="mm")
 
     img.save(out_path, "PNG")
 
