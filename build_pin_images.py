@@ -158,20 +158,37 @@ def pill_badge(draw, x, y, text, fg, bg, font_size=24):
     return x1
 
 
-def ribbon_badge(base, cx, cy, text, accent, angle=-30):
-    """A diagonal corner 'value' ribbon (e.g. '10 PAGES + KEY') instead of a
-    small plain circle - this exact device (a bold diagonal banner over the
-    corner) is what every strong-performing competitor pin in the Pinterest
-    audit used to call out page count / bundle size."""
-    font = load_font(FONT_TITLE, 30)
+def build_ribbon(text, accent, angle=-30, font_size=30, pad=70, height=66):
+    """Builds the rotated diagonal ribbon banner as its own image, without
+    pasting it anywhere - split out from ribbon_badge() so a caller that
+    needs to lay out OTHER elements around it (e.g. title text that must
+    not run under it) can measure its exact rendered footprint first via
+    PIL's own rotation, rather than hand-deriving the rotated bounding box
+    with trig and risking it drifting out of sync with the real pixels."""
+    font = load_font(FONT_TITLE, font_size)
     tmp_draw = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
     text_w = tmp_draw.textlength(text, font=font)
-    width, height = int(text_w) + 70, 66
+    width = int(text_w) + pad
     ribbon = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     rd = ImageDraw.Draw(ribbon)
     rd.rectangle([0, 0, width, height], fill=accent)
     rd.text((width / 2, height / 2 + 1), text, font=font, fill=(255, 255, 255, 255), anchor="mm")
-    ribbon = ribbon.rotate(angle, expand=True, resample=Image.BICUBIC)
+    return ribbon.rotate(angle, expand=True, resample=Image.BICUBIC)
+
+
+def ribbon_badge(base, cx, cy, text, accent, angle=-30, font_size=30, pad=70, height=66):
+    """A diagonal corner 'value' ribbon (e.g. '10 PAGES + KEY') instead of a
+    small plain circle - this exact device (a bold diagonal banner over the
+    corner) is what every strong-performing competitor pin in the Pinterest
+    audit used to call out page count / bundle size.
+
+    font_size/pad/height default to the pin's original fixed values, but are
+    parameters because the 800x800 thumbnail needs a visibly smaller ribbon
+    than the 1000x1500 pin - at the pin's fixed size, the ribbon's footprint
+    ran directly into the title text for several real product titles (e.g.
+    "3rd Grade Multiplication"), found by actually measuring rendered text
+    width, not by eyeballing one example."""
+    ribbon = build_ribbon(text, accent, angle, font_size, pad, height)
     base.paste(ribbon, (int(cx - ribbon.width / 2), int(cy - ribbon.height / 2)), ribbon)
 
 
@@ -267,14 +284,41 @@ def make_thumbnail(grade, operation, num_pages, max_n, per_page, out_path):
 
     header_h = 190
     draw.rectangle([0, 0, THUMB_SIZE, header_h], fill=accent)
-    gw.draw_mascot_owl(draw, 92, 95, 52, accent)
-    pill_badge(draw, 34, 154, "NO PREP", INK, CREAM, font_size=18)
+
+    mascot_cx, mascot_cy, mascot_r = 92, 95, 52
+    gw.draw_mascot_owl(draw, mascot_cx, mascot_cy, mascot_r, accent)
+
+    # "NO PREP" pill horizontally centered directly under the owl's face
+    # (not just left-anchored near it) - measured against the pill's own
+    # rendered width via the same font/padding pill_badge uses internally,
+    # so it stays centered if the text or font size ever changes.
+    _pill_font = load_font(FONT_BODY, 18, 700)
+    _pill_w = draw.textlength("NO PREP", font=_pill_font) + 18 * 2  # + pill_badge's pad_x*2
+    pill_x = mascot_cx - _pill_w / 2
+    pill_y = mascot_cy + mascot_r + 6
+    pill_badge(draw, pill_x, pill_y, "NO PREP", INK, CREAM, font_size=18)
+
+    # Build the page-count ribbon FIRST (smaller than the pin's - the pin's
+    # fixed 30pt ribbon, measured, ran directly into the title text for
+    # several real product titles like "3rd Grade Multiplication" on this
+    # more cramped 800x800 canvas) so its true post-rotation size - not an
+    # estimate - can define how much width is actually safe for the title.
+    ribbon_cx, ribbon_cy = THUMB_SIZE - 90, 40
+    ribbon_font_size = 20
+    ribbon_img = build_ribbon(f"{num_pages} PAGES", INK, angle=-30,
+                               font_size=ribbon_font_size, pad=50,
+                               height=int(ribbon_font_size * 1.6))
+    ribbon_left_edge = ribbon_cx - ribbon_img.width / 2
+
+    title_start_x = 170
+    title_safety_gap = 15
+    title_max_w = ribbon_left_edge - title_start_x - title_safety_gap
 
     title_font = load_font(FONT_TITLE, 40)
-    lines = wrap_text(draw, f"{grade} {operation}", title_font, THUMB_SIZE - 220)
+    lines = wrap_text(draw, f"{grade} {operation}", title_font, title_max_w)
     ty = header_h / 2 - (len(lines[:2]) * 46) / 2 + 23
     for line in lines[:2]:
-        draw.text((170, ty), line, font=title_font, fill=CREAM, anchor="lm")
+        draw.text((title_start_x, ty), line, font=title_font, fill=CREAM, anchor="lm")
         ty += 46
 
     stack = fanned_stack(grade, operation, max_n, per_page, target_w=335)
@@ -283,7 +327,7 @@ def make_thumbnail(grade, operation, num_pages, max_n, per_page, out_path):
     paste_with_alpha_shadow(img, stack, px, py)
     draw = ImageDraw.Draw(img)
 
-    ribbon_badge(img, THUMB_SIZE - 100, header_h - 4, f"{num_pages} PAGES", INK, angle=-30)
+    img.paste(ribbon_img, (int(ribbon_cx - ribbon_img.width / 2), int(ribbon_cy - ribbon_img.height / 2)), ribbon_img)
     draw = ImageDraw.Draw(img)
 
     brand_font = load_font(FONT_BODY, 26, 600)
